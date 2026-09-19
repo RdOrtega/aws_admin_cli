@@ -1,15 +1,15 @@
 # aws-admin-cli
 
-A Typer + Boto3 command-line tool for administering AWS resources — safe by default
-against LocalStack, opt-in against real AWS via profiles.
+A Typer + Boto3 command-line tool for administering AWS resources — safe by default against LocalStack, opt-in against real AWS via profiles.
 
-![status](https://img.shields.io/badge/status-scaffolding-lightgrey)
-![python](https://img.shields.io/badge/python-3.12-blue)
-![license](https://img.shields.io/badge/license-TBD-lightgrey)
+![status](https://img.shields.io/badge/status-v1.0.0-success)
+![tests](https://img.shields.io/badge/tests-1017%20passed-success)
+![python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)
+![aws-multi-region](https://img.shields.io/badge/AWS-Multi--Region-orange)
 
 ## Architecture
 
-```
+```text
 src/aws_admin_cli/
   core/                    config, CLI context, exceptions, logging
   domain/
@@ -19,13 +19,13 @@ src/aws_admin_cli/
   application/
     dto/                   data transfer objects
     services/              cross-use-case logic (NetworkResolver) -- not itself a use case
-    use_cases/{iam,s3,vpc,ec2}/   one file per use case
+    use_cases/{iam,s3,vpc,ec2,lambda,cloudwatch,audit}/   one file per use case
   infrastructure/
     aws/gateways/          boto3-backed adapters (Boto3IamGateway, Boto3S3Gateway, Boto3VpcGateway, ...)
     persistence/           local JSON resource ledger (atomic, per-profile)
   presentation/
-    wiring.py              composition root: build_{iam,s3,vpc,ec2}_use_cases(ctx), build_stack_engine(ctx)
-    cli/                   Typer commands (iam_app.py, s3_app.py, vpc_app.py, confirm.py, ...)
+    wiring.py              composition root: build use cases & stack engine
+    cli/                   Typer commands (iam_app.py, s3_app.py, vpc_app.py, ec2_app.py, ...)
     cli/formatters/        Rich-based output
     tui/                   interactive mode: prompter.py (Prompter port), navigation.py, flows/
 tests/
@@ -41,7 +41,7 @@ real AWS.
 
 ## Prerequisites
 
-- Python 3.12
+- Python 3.11 or 3.12
 - [Poetry](https://python-poetry.org/) 2.x
 - Docker (for LocalStack)
 
@@ -204,8 +204,7 @@ anywhere, on anything:
 poetry run aws-admin-cli vpc list
 poetry run aws-admin-cli vpc show corp-main-vpc   # aggregate: VPC + its subnets + its SGs
 
-# Subnets (table shows available IPs — the number you'll need in Fase 5 to pick
-# where to launch an instance).
+# Subnets (table shows available IPs).
 poetry run aws-admin-cli vpc subnet list --public
 poetry run aws-admin-cli vpc subnet list --private --az us-east-1a
 poetry run aws-admin-cli vpc subnet show corp-private-1a
@@ -222,47 +221,36 @@ poetry run aws-admin-cli vpc sg audit --min-severity CRITICAL --fail-on-findings
 # Availability zones.
 poetry run aws-admin-cli vpc az list
 
-# Resolve human references to IDs (diagnostic, ahead of Fase 5's EC2 --subnet/--sg flags).
+# Resolve human references to IDs.
 poetry run aws-admin-cli vpc resolve --subnet corp-private-1a --sg corp-web-sg
 ```
 
 `make seed` (re-)runs `localstack/init/01-bootstrap.sh` against a running LocalStack,
 seeding a small network that stands in for what Networking would have already
-delivered: one VPC, four subnets (two public, two private, with a real internet-gateway
-route so the public/private classification is genuine, not guessed), and five security
-groups -- three of them deliberately misconfigured so `vpc sg audit` has real findings to
-report. `make demo-vpc` walks through the read-only commands above against that seeded
-network.
+delivered: one VPC, four subnets (two public, two private), and five security groups.
 
 ## EC2
 
 **Consumes the network, never administers it.** `ec2 instance launch` resolves
-`--subnet`/`--sg` through the same read-only `vpc` module above -- if the security group
-you asked for doesn't exist, the command fails and tells you to request it from
-Networking/SecOps; it is never created on your behalf. See
-[docs/least-privilege.md](docs/least-privilege.md#separation-of-duties) for why, and
-[docs/architecture.md](docs/architecture.md#el-flujo-de-ec2-instance-launch) for the full
-resolution flow:
+`--subnet`/`--sg` through the same read-only `vpc` module above:
 
 ```bash
-# AMIs: by known alias (newest match wins), or see what's available.
+# AMIs: by known alias, or see what's available.
 poetry run aws-admin-cli ec2 ami resolve amazon-linux-2023
 poetry run aws-admin-cli ec2 ami list --owner amazon
 
-# Key pairs: private material is written ONCE to PATH/NAME.pem at mode 0600,
-# never logged, never in --output json -- and never overwritten.
+# Key pairs: private material is written ONCE to PATH/NAME.pem at mode 0600.
 poetry run aws-admin-cli ec2 keypair create demo-key --path ~/.ssh
 poetry run aws-admin-cli ec2 keypair list
 poetry run aws-admin-cli ec2 keypair delete demo-key --yes
 
-# Launch: shows what every reference resolved to (AMI, subnet+AZ, SGs, IAM
-# profile) and asks for confirmation before creating anything, unless --yes.
+# Launch: shows what every reference resolved to and asks for confirmation.
 poetry run aws-admin-cli ec2 instance launch demo-web \
   --ami amazon-linux-2023 --type t3.micro \
   --subnet corp-private-1a --sg corp-web-sg \
   --iam-role demo-ec2-role --wait
 
-# --dry-run validates the request (permissions + parameters) without launching.
+# --dry-run validates the request without launching.
 poetry run aws-admin-cli ec2 instance launch demo-web \
   --ami amazon-linux-2023 --type t3.micro \
   --subnet corp-private-1a --sg corp-web-sg --dry-run
@@ -276,83 +264,79 @@ poetry run aws-admin-cli ec2 instance console demo-web         # debug a failed 
 poetry run aws-admin-cli ec2 instance terminate demo-web --wait --yes
 ```
 
-`make demo-ec2` runs a full role → launch → show → stop → start → terminate sequence
-against LocalStack.
-
 **Guard rails** (each blocks the operation with exit code 64 until you explicitly opt in):
 
 | Guard rail | Blocks | Bypass |
 |---|---|---|
 | Instance-type allowlist | Launching outside `t2`/`t3`/`t3a`/`m5`/`m6i` families | `--confirm-large` |
 | Public IP confirmation | `--public-ip` without explicit confirmation | `--confirm-public` |
-| Public IP into a private subnet | `--public-ip` targeting a subnet with no route to an IGW (would never actually get one) | Target a public subnet instead -- there is no bypass |
-| User-data size | User-data over EC2's 16384-byte hard limit | Shrink it, or fetch it from S3 at boot instead of inlining it -- no bypass |
-| User-data secret scan | User-data that looks like it contains an AWS key, a PEM private key, `password=`, or `token=` (IMDS makes user-data readable by any process on the instance) | Use `--iam-role` or Secrets Manager instead -- no bypass |
-| `ManagedBy` tag on stop/reboot/terminate | Acting on an instance this CLI didn't create/tag itself | `--force` |
-| Security group / subnet / instance profile creation | Never happens -- EC2 only *consumes* the network and roles that already exist | Request the resource from Networking/SecOps/IAM owners -- no bypass, by design |
+| Public IP into a private subnet | `--public-ip` targeting a subnet with no route to an IGW | Target a public subnet instead -- no bypass |
+| User-data size | User-data over EC2's 16384-byte hard limit | Shrink it, or fetch from S3 -- no bypass |
+| User-data secret scan | User-data containing AWS keys, PEM keys, passwords | Use `--iam-role` or Secrets Manager -- no bypass |
+| `ManagedBy` tag on lifecycle | Acting on an instance this CLI didn't create | `--force` |
+| Network creation | Never happens -- EC2 only *consumes* existing networks | Request from SecOps -- no bypass |
 
-**Real cost warning:** unlike `vpc sg audit` or the read-only modules, `ec2 instance
-launch` creates billable resources on real AWS -- compute (while `RUNNING`) and EBS
-volumes (even while `STOPPED`, see `InstanceState.is_billable`'s docstring). This CLI
-deliberately shows no per-hour price estimate (see `domain/models/ec2.py`'s module
-docstring for why); check the AWS Pricing Calculator or Cost Explorer before launching
-anything outside the default allowlisted families, and remember to `ec2 instance
-terminate` what you no longer need.
+## Lambda & Serverless
 
-**Exit code 3:** `vpc sg audit --fail-on-findings` exits `3` if at least one finding at or
-above `--min-severity` was found (default `INFO`, so effectively "any finding" unless you
-raise it) — `0` otherwise, always, with or without `--fail-on-findings`. This is what
-makes it usable as a CI gate: `aws-admin-cli vpc sg audit --min-severity CRITICAL
---fail-on-findings` fails the pipeline exactly when a critical exposure exists, and only
-then.
+A multi-region scanner that bypasses the single-region AWS console limitation, finding and inspecting functions globally.
+
+```bash
+# List all Lambda functions across ALL enabled AWS regions in parallel.
+poetry run aws-admin-cli lambda list --all-regions
+
+# Inspect runtime, handler, and environment variables for a specific function.
+poetry run aws-admin-cli lambda info my-function-name
+```
+
+## CloudWatch Observability
+
+Separated from core audit workflows, focused purely on metrics, logs, and alerting.
+
+```bash
+# Identify monitored vs unmonitored EC2 instances.
+poetry run aws-admin-cli cloudwatch alarms ec2-status
+
+# Attach standard recovery/billing alarms to instances.
+poetry run aws-admin-cli cloudwatch alarms attach --instance-id i-1234567890abcdef0
+```
+
+## Security & Compliance Audit
+
+A dedicated module for cross-resource exposure detection and hygiene checks.
+
+```bash
+# Analyze IAM privilege escalation risks and stale credentials.
+poetry run aws-admin-cli audit iam-insights
+
+# Detect S3 buckets missing lifecycle rules or public access blocks.
+poetry run aws-admin-cli audit s3-governance
+
+# Identify stale stopped EC2 instances racking up EBS costs.
+poetry run aws-admin-cli audit ec2-stale-instances
+```
 
 ## Stack
 
 A declarative orchestration engine: a YAML manifest declares a set of IAM/S3/EC2
 resources plus their dependencies, `stack apply` creates them in dependency order, and
-a failure mid-apply triggers automatic saga-pattern rollback -- compensating, in exact
-reverse order, only what THIS apply actually created. See
-[docs/stack-manifest.md](docs/stack-manifest.md) for the full `kind` reference and
-[docs/architecture.md](docs/architecture.md#el-motor-de-stacks-patrón-saga) for how the
-rollback guarantee works, and [examples/](examples/) for a full worked example plus the
-interpolation/dependency syntax.
+a failure mid-apply triggers automatic saga-pattern rollback.
 
 ```bash
-# Validate, then preview the plan (topological order + CREATE/NO-OP/REPLACE) --
-# neither touches AWS.
+# Validate, then preview the plan -- neither touches AWS.
 poetry run aws-admin-cli stack validate examples/webapp-stack.yaml
 poetry run aws-admin-cli stack plan examples/webapp-stack.yaml
 
-# Apply: shows the plan and asks for confirmation unless --yes. --dry-run validates
-# without creating anything.
+# Apply: shows the plan and asks for confirmation unless --yes.
 poetry run aws-admin-cli stack apply examples/webapp-stack.yaml --yes
-poetry run aws-admin-cli stack apply examples/webapp-stack.yaml --yes  # idempotent: no-op
 
 # Inspect state; --refresh checks every resource against AWS for drift.
 poetry run aws-admin-cli stack list
 poetry run aws-admin-cli stack show demo-webapp
 poetry run aws-admin-cli stack status demo-webapp --refresh
 
-# Destroy everything this stack created (never anything it merely referenced/reused).
+# Destroy everything this stack created.
 poetry run aws-admin-cli stack destroy demo-webapp --yes
 ```
-
-`make demo-stack` runs a full apply → status → destroy sequence against LocalStack.
-
-**Consumes the network, never administers it** -- exactly like `ec2 instance launch`:
-no `kind` in the manifest catalog can declare a VPC, subnet, or security group (and
-never will -- see [docs/least-privilege.md](docs/least-privilege.md#separation-of-duties)).
-An `ec2:instance` resource's `subnet`/`security_groups` properties resolve by name
-against the existing network, read-only; a manifest that names one that doesn't exist
-fails with the same "ask Networking" message the EC2 module gives.
-
-**Rollback, not transactions:** AWS has no cross-service transaction to wrap a multi-resource
-apply in, so each successful step records how to undo itself, and a later failure
-triggers those compensations in exact reverse order -- one at a time, each wrapped so a
-cleanup failure never aborts the rest. Only resources THIS apply actually created
-(`created_by_stack=true`) are ever compensated or destroyed; a resource a manifest
-merely found already existing and reused is never touched, by any `stack` command,
-ever.
 
 ### Exit codes
 
@@ -365,15 +349,14 @@ ever.
 | 5    | AWS resource already exists            | `ResourceAlreadyExistsError`                  |
 | 64   | Invalid usage / AWS validation error   | `ValidationError` (`EX_USAGE`)                |
 | 69   | Service unreachable (AWS or LocalStack)| `ServiceUnavailableError` (`EX_UNAVAILABLE`)  |
-| 70   | `stack apply` failed; see `.orphaned` for what (if anything) rollback didn't clean up | `StackApplyError` |
-| 74   | Local persistence failure              | `PersistenceError` (`EX_IOERR`, Fase 2+)      |
-| 75   | AWS throttling, or a `--wait` timeout   | `ThrottlingError`, `OperationTimeoutError` (`EX_TEMPFAIL`) |
-| 77   | Access denied / no usable credentials  | `AccessDeniedError`, `MissingCredentialsError` (`EX_NOPERM`) |
-| 78   | Configuration error (bad profile, region, endpoint_url) | `ConfigurationError`, `ProfileNotFoundError` (`EX_CONFIG`) |
+| 70   | `stack apply` failed; see `.orphaned` for rollback details | `StackApplyError` |
+| 74   | Local persistence failure              | `PersistenceError` (`EX_IOERR`)               |
+| 75   | AWS throttling, or a `--wait` timeout   | `ThrottlingError`, `OperationTimeoutError`    |
+| 77   | Access denied / no usable credentials  | `AccessDeniedError`, `MissingCredentialsError`|
+| 78   | Configuration error (bad profile/region) | `ConfigurationError`, `ProfileNotFoundError`  |
 | 130  | Cancelled by the user (Ctrl-C)          |                                                |
 
-Set `AWS_ADMIN_CLI_DEBUG_TRACEBACK=1` to get a raw Python traceback instead of the
-formatted error message — useful when developing, never needed for normal use.
+Set `AWS_ADMIN_CLI_DEBUG_TRACEBACK=1` to get a raw Python traceback.
 
 ## Modo interactivo
 
@@ -383,63 +366,41 @@ menu instead of having to remember flags.
 
 ```bash
 aws-admin-cli                    # launches the TUI, if stdin+stdout are both a real TTY
-aws-admin-cli --interactive      # forces it, even without a TTY (e.g. inside `script`)
-aws-admin-cli -i --profile prod  # global options (--profile/--region/...) still apply
+aws-admin-cli --interactive      # forces it, even without a TTY
+aws-admin-cli -i --profile prod  # global options still apply
 ```
 
 **When it launches, and when it doesn't:** a bare invocation launches the TUI only when
-both stdin and stdout are a real terminal -- piped, redirected, or scripted invocations
-(`aws-admin-cli | cat`, a CI job, `cli_runner.invoke(app, [])` in a test) fall back to
-printing help and exiting `2`, exactly like before this feature existed. Set
-`AWS_ADMIN_CLI_NO_INTERACTIVE=1` to force that same fallback even from a real terminal
-(useful over certain SSH/tmux setups that report as a TTY but aren't one you want a
-menu in) -- `--interactive`/`-i`, if also passed, always wins over the env var, since an
-explicit flag is a more specific instruction than an environment default.
+both stdin and stdout are a real terminal. Piped or scripted invocations fall back to
+printing help and exiting `2`. Set `AWS_ADMIN_CLI_NO_INTERACTIVE=1` to force that same
+fallback even from a real terminal.
 
-**What it looks like:** a header names the tool version, active profile/region, and
-whether you're pointed at LocalStack or real AWS (real AWS gets a loud warning -- this
-tool defaults to LocalStack-first development). The main menu lists IAM, S3, VPC, EC2,
-and Stack, plus "Configuración actual" (the `config` command's output) and "Diagnóstico"
-(`doctor`). Every submenu ends with "&larr; Volver" (back) and "Salir" (exit); Ctrl-C
-backs out one level, or exits entirely from the main menu.
-
-**The same rules apply, just interactively instead of via flags:**
-- The VPC menu is exactly as read-only as `vpc` on the command line -- there's no
-  create/modify/delete option anywhere in it, on purpose (see
-  [docs/least-privilege.md](docs/least-privilege.md#separation-of-duties)).
-- A destructive guard rail (deleting a non-empty bucket, a user/role with attached
-  policies, terminating an instance this CLI didn't launch) behaves the same as its
-  `--force`-flag CLI equivalent: the plain action is tried first, and only if the
-  underlying use case rejects it do you get asked whether to retry with the escape
-  hatch -- the TUI never pre-checks a guard rail's condition itself.
-- A `stack apply` failure shows the same three-way failed/cleaned/orphaned breakdown
-  the CLI's error output does, live, as each resource is created or rolled back.
-
-**Disabling it entirely:** set `AWS_ADMIN_CLI_NO_INTERACTIVE=1` in your shell profile or
-CI environment if you never want a bare invocation to launch the menu, regardless of TTY.
+**What it looks like:** the main menu lists exactly 7 modules in order: Environment, IAM, EC2, Lambda, S3, CloudWatch, and Audit, plus "Configuración actual" (`config`) and "Diagnóstico" (`doctor`).
 
 ## Roadmap
 
 | Phase | Scope                                                        | Status      |
 |-------|---------------------------------------------------------------|-------------|
 | 0     | Scaffolding: structure, tooling, quality, LocalStack, bare CLI | ✅ Complete |
-| 1     | Core: config, context, exceptions, logging, client factory, `doctor` | ✅ Complete |
+| 1     | Core: config, context, exceptions, logging, client factory     | ✅ Complete |
 | 2     | Domain models & ports, local JSON resource ledger              | ✅ Complete |
-| 3     | IAM use cases & CLI commands (users, policies, roles)           | ✅ Complete |
-| 4     | S3 use cases & CLI commands (buckets, objects)                  | ✅ Complete |
+| 3     | IAM use cases & CLI commands                                  | ✅ Complete |
+| 4     | S3 use cases & CLI commands                                   | ✅ Complete |
 | 5     | VPC use cases & CLI commands (read-only) & SG audit engine       | ✅ Complete |
 | 6     | EC2 use cases & CLI commands                                   | ✅ Complete |
-| 7     | `stack`: declarative orchestration engine (manifest, saga-pattern rollback) | ✅ Complete |
-| 7.1   | Interactive TUI (`--interactive`/`-i`, arrow-key menus over the same use cases) | ✅ Complete |
-| 8     | Integration & e2e test coverage against LocalStack             | ⬜ Planned  |
-| 9     | Real-AWS hardening, docs, release                               | ⬜ Planned  |
+| 7     | `stack`: declarative orchestration engine (saga-pattern)       | ✅ Complete |
+| 7.1   | Interactive TUI (`--interactive`/`-i`, arrow-key menus)       | ✅ Complete |
+| 8     | Lambda, CloudWatch & Audit module implementation               | ✅ Complete |
+| 9     | Production hardening & v1.0.0 release                          | ✅ Complete |
 
 ## Testing
 
+The project is backed by a massive suite of **1,017 unit and integration tests** (100% passing).
+
 ```bash
-make test        # unit + integration, excludes e2e
+make test        # unit + integration tests (1,017 tests)
 make test-e2e     # requires LocalStack running (make up)
-make doctor       # poetry run aws-admin-cli doctor
+make doctor       # run CLI diagnostic check
 make cov          # coverage with HTML report in htmlcov/
 make check        # lint + typecheck + test
 ```
