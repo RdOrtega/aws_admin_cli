@@ -38,3 +38,4 @@ keys/
 .vscode/
 .idea/
 .DS_Store
+*.pkg
