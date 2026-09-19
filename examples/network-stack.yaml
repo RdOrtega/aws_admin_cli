@@ -1,0 +1,12 @@
+apiVersion: v1
+name: demo-network
+description: >
+  Manifiesto DELIBERADAMENTE inválido: declara un recurso de red, algo que ningún
+  stack puede hacer. `stack validate` debe rechazarlo citando la Separation of
+  Duties (ver docs/least-privilege.md) -- exit code 64.
+resources:
+  - id: extra-sg
+    kind: security-group:sg
+    properties:
+      group_name: demo-extra-sg
+      description: Este recurso nunca debería poder crearse desde un stack.

@@ -1,0 +1,44 @@
+apiVersion: v1
+name: demo-webapp
+description: Aplicación web de ejemplo sobre la red corporativa existente
+resources:
+  - id: app-bucket
+    kind: s3:bucket
+    properties:
+      bucket_name: demo-webapp-assets
+      enable_versioning: true
+
+  - id: app-role
+    kind: iam:role
+    properties:
+      role_name: demo-webapp-role
+      service: ec2.amazonaws.com
+
+  - id: bucket-read-policy
+    kind: iam:policy
+    properties:
+      policy_name: demo-webapp-s3-read
+      document:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: ["s3:GetObject", "s3:ListBucket"]
+            Resource: ["${app-bucket.arn}", "${app-bucket.arn}/*"]
+
+  - id: attach-policy
+    kind: iam:policy-attachment
+    properties:
+      policy_arn: "${bucket-read-policy.arn}"
+      principal_type: role
+      principal_name: "${app-role.name}"
+
+  - id: app-server
+    kind: ec2:instance
+    properties:
+      name: demo-webapp-server
+      ami: amazon-linux-2023
+      instance_type: t3.micro
+      subnet: corp-private-1a          # referencia de SOLO LECTURA
+      security_groups: [corp-web-sg]   # referencia de SOLO LECTURA
+      iam_role: "${app-role.name}"
+    depends_on: [attach-policy]

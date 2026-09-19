@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Testing & coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+
+# Environment variables
+.env
+
+# LocalStack persisted state
+volume/
+
+# aws_admin_cli local config/state (not repo JSON)
+~/.aws_admin_cli/*.json
+
+# Auto-generated secrets -- never commit an EC2 .pem or an IAM credentials file
+keys/
+*.pem
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store

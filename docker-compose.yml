@@ -1,0 +1,27 @@
+services:
+  localstack:
+    # localstack/localstack's own PERSISTENCE=1 is a Pro-only feature (silently a
+    # no-op without a LOCALSTACK_AUTH_TOKEN) -- gresau/localstack-persist is a
+    # drop-in community-edition image that adds real, free persistence on top of
+    # the same LocalStack. It tracks LocalStack 4.x (no 3.8-based tag exists), so
+    # this is a minor-version bump of the emulator itself, not just a flag change.
+    image: gresau/localstack-persist:4.14.0
+    container_name: aws_admin_cli_localstack
+    ports:
+      - "4566:4566"
+      - "4510-4559:4510-4559"
+    environment:
+      - DEBUG=0
+      - SERVICES=iam,sts,s3,ec2
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - AWS_DEFAULT_REGION=us-east-1
+    volumes:
+      - ./volume:/persisted-data
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./localstack/init:/etc/localstack/init/ready.d
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
